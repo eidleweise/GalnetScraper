@@ -48,9 +48,11 @@ MASK_PATH = "lave_radio_wordcloud_mask.png"
 # Locks for thread-safe operations
 log_lock = threading.Lock()
 rate_limit_lock = threading.Lock()
+community_lock = threading.Lock()
 
 # Rate limiting state
 last_request_time = 0
+community_hrefs = []
 
 # --- Utilities ---
 
@@ -330,7 +332,7 @@ def _run_frontier_scrape(page_number, browser_context):
                 date_str = local_date if local_date else fetch_drinkybird_date(header_text, browser_context)
 
             existing_article = get_existing_article(header_text, date_str)
-            if not existing_article or not existing_article.get("article_url"):
+            if not existing_article or existing_article.get("source") != "Frontier":
                 link_element = element.find('a', href=True)
                 article_url = "https://www.elitedangerous.com" + link_element['href'] if link_element else ""
                 body_text = ""
@@ -372,6 +374,79 @@ def scrape_frontier_page(page_number, browser_context=None):
         browser.close()
         return articles_processed
 
+def _run_community_scrape(page_number, browser_context):
+    """
+    Internal helper to scrape Galnet news from the Community site.
+    """
+    global community_hrefs
+    with community_lock:
+        if not community_hrefs:
+            enforce_rate_limit()
+            url = "https://community.elitedangerous.com/galnet"
+            print("Fetching Community Galnet date list...")
+            page = browser_context.new_page()
+            try:
+                page.goto(url, timeout=60000)
+                more_link = page.locator("a[onclick*='show_extra_filters']")
+                if more_link.is_visible():
+                    more_link.click()
+                    page.wait_for_selector("a.galnetLinkBoxLink", timeout=15000)
+                soup = BeautifulSoup(page.content(), 'html.parser')
+                links = soup.find_all('a', class_='galnetLinkBoxLink')
+                community_hrefs = ["https://community.elitedangerous.com" + link['href'] for link in links if 'href' in link.attrs]
+                print(f"Found {len(community_hrefs)} date links on Community site.")
+            except Exception as error:
+                print(f"Failed to fetch Community list: {error}")
+                return 0
+            finally:
+                page.close()
+
+    if page_number >= len(community_hrefs):
+        return 0
+
+    target_url = community_hrefs[page_number]
+    print(f"Scanning Community Galnet: {target_url}...")
+    page = browser_context.new_page()
+    try:
+        page.goto(target_url, timeout=60000)
+        soup = BeautifulSoup(page.content(), 'html.parser')
+        article_elements = soup.find_all('div', class_='article')
+        processed_count = 0
+        for element in article_elements:
+            header_element = element.find('h3', class_='galnetNewsArticleTitle')
+            if not header_element: continue
+            header_text = header_element.get_text(strip=True)
+            date_element = element.find('p', class_='small')
+            date_str = date_element.get_text(strip=True) if date_element else "unknown_date"
+
+            if date_str == "unknown_date":
+                local_date = find_date_locally(header_text)
+                date_str = local_date if local_date else fetch_drinkybird_date(header_text, browser_context)
+
+            existing_article = get_existing_article(header_text, date_str)
+            if not existing_article or existing_article.get("source") not in ["Frontier", "Community"]:
+                body_paragraphs = [p.get_text(strip=True) for p in element.find_all('p') if 'small' not in p.get('class', [])]
+                body_text = "\n\n".join([p for p in body_paragraphs if p])
+                link_element = header_element.find('a', href=True)
+                article_url = "https://community.elitedangerous.com" + link_element['href'] if link_element else target_url
+                save_article({"header": header_text, "body": body_text, "article_date": date_str, "article_url": article_url}, "Community")
+                processed_count += 1
+        return processed_count
+    finally:
+        page.close()
+
+def scrape_community_page(page_number, browser_context=None):
+    """
+    Public method to scrape a specific date from the Community site.
+    """
+    if browser_context:
+        return _run_community_scrape(page_number, browser_context)
+    with sync_playwright() as playwright_instance:
+        browser, browser_context = get_browser_context(playwright_instance)
+        articles_processed = _run_community_scrape(page_number, browser_context)
+        browser.close()
+        return articles_processed
+
 def sync_source(source_name, scrape_func, browser_context):
     """
     Utility to scan a source sequentially starting from page 0 until
@@ -388,13 +463,15 @@ def sync_source(source_name, scrape_func, browser_context):
 
 def fetch_new_articles():
     """
-    Fetches only new articles from both Inara and Frontier sources and
-    then updates the master JSON file.
+    Fetches only new articles from Inara, Community and Frontier sources.
+    Maintains preference: Frontier > Community > Inara.
     """
     print("\n=== Fetching New Galnet Articles ===")
     with sync_playwright() as playwright_instance:
         browser, browser_context = get_browser_context(playwright_instance)
+        # Order ensures highest priority source overwrites and sets final source label
         sync_source("Inara", scrape_inara_page, browser_context)
+        sync_source("Community", scrape_community_page, browser_context)
         sync_source("Frontier", scrape_frontier_page, browser_context)
         browser.close()
     combine_json_files()
@@ -610,15 +687,16 @@ def main_menu():
     """
     while True:
         print(f"\n--- Galnet Scraper Menu ---")
-        print("1. Sync New Articles (Both Sources)")
+        print("1. Sync New Articles (All Sources)")
         print("2. Bulk Scrape Inara Galnet (Page Range)")
-        print("3. Bulk Scrape Frontier Galnet (Page Range)")
-        print("4. Rename Files & Sync Timestamps")
-        print("5. Fix Unknown Date Files (Search Drinkybird)")
-        print("6. Combine All into Single JSON & 7z")
-        print("7. Normalize Dates")
-        print("8. Generate Custom Word Cloud")
-        print("9. Generate Yearly Word Clouds (3300-3312)")
+        print("3. Bulk Scrape Community Galnet (Index Range)")
+        print("4. Bulk Scrape Frontier Galnet (Page Range)")
+        print("5. Rename Files & Sync Timestamps")
+        print("6. Fix Unknown Date Files (Search Drinkybird)")
+        print("7. Combine All into Single JSON & 7z")
+        print("8. Normalize Dates")
+        print("9. Generate Custom Word Cloud")
+        print("10. Generate Yearly Word Clouds (3300-3312)")
         print("0. Quit")
 
         choice = input("\nEnter choice: ").strip()
@@ -626,23 +704,27 @@ def main_menu():
 
         if choice == '1':
             fetch_new_articles()
-        elif choice in ('2', '3'):
+        elif choice in ('2', '3', '4'):
             try:
-                start_page = int(input("Start page: ") or 0)
-                end_page = int(input("End page: ") or 10)
-                scrape_function = scrape_inara_page if choice == '2' else scrape_frontier_page
+                # start_page = int(input("Start index/page: ") or 0)
+                # end_page = int(input("End index/page: ") or 10)
+                start_page = 0
+                end_page = 10
+                if choice == '2': scrape_function = scrape_inara_page
+                elif choice == '3': scrape_function = scrape_community_page
+                else: scrape_function = scrape_frontier_page
                 with ThreadPoolExecutor(max_workers=5) as thread_executor:
                     thread_executor.map(scrape_function, range(start_page, end_page))
                 combine_json_files()
             except: print("Invalid input.")
-        elif choice == '4': fix_maintenance("rename")
-        elif choice == '5': fix_unknown_date_files()
-        elif choice == '6': 
+        elif choice == '5': fix_maintenance("rename")
+        elif choice == '6': fix_unknown_date_files()
+        elif choice == '7': 
             use_7z = input("Create 7z archive? (Y/n): ").strip().lower() != 'n'
             combine_json_files(create_7z=use_7z)
-        elif choice == '7': fix_maintenance("normalize")
-        elif choice == '8': run_custom_wordcloud()
-        elif choice == '9': run_yearly_wordclouds()
+        elif choice == '8': fix_maintenance("normalize")
+        elif choice == '9': run_custom_wordcloud()
+        elif choice == '10': run_yearly_wordclouds()
 
 if __name__ == "__main__":
     main_menu()

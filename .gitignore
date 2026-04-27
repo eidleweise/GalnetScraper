@@ -1,0 +1,16 @@
+# Virtual Environment
+.venv/
+__pycache__/
+*.pyc
+
+# Local Data Archive
+GalnetNewsArchive/*.json
+galnet_news_full.json
+
+# Generated Word Clouds
+wordcloud_*.png
+wc_v1/wordcloud_*.png
+wc_v2/wordcloud_*.png
+
+# IDE folders
+.idea/

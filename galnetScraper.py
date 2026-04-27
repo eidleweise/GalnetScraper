@@ -26,12 +26,12 @@ USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTM
 
 # List of paths to .ttf or .otf font files. 
 FONT_PATHS = [
-    "/home/ben/.local/share/fonts/n/NanamiPro_Normal.otf",
-    "/home/ben/.local/share/fonts/e/EUROCAPS.ttf",
+    "~/.local/share/fonts/n/NanamiPro_Normal.otf",
+    "~/.local/share/fonts/e/EUROCAPS.ttf",
     "EuroStyle_Normal.ttf",
-    "/home/ben/.local/share/fonts/p/Protomolecule.otf",
-    "/home/ben/.local/share/fonts/g/Garde.ttf",
-    "/home/ben/.local/share/fonts/b/b5.ttf"
+    "~/.local/share/fonts/p/Protomolecule.otf",
+    "~/.local/share/fonts/g/Garde.ttf",
+    "~/.local/share/fonts/b/b5.ttf"
 ]
 
 # Path to an image file to use as a mask (e.g. "mask.png")

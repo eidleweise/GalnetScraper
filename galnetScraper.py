@@ -23,8 +23,9 @@ except ImportError:
 ARCHIVE_DIR = "GalnetNewsArchive"
 MASTER_JSON = "galnet_news_full.json"
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36"
+GLOBAL_RATE_LIMIT = 1.0  # Seconds between requests to any external source
 
-# List of paths to .ttf or .otf font files. 
+# List of paths to .ttf or .otf font files.
 FONT_PATHS = [
     "~/.local/share/fonts/n/NanamiPro_Normal.otf",
     "~/.local/share/fonts/e/EUROCAPS.ttf",
@@ -37,14 +38,18 @@ FONT_PATHS = [
 # Path to an image file to use as a mask (e.g. "mask.png")
 MASK_PATH = "lave_radio_wordcloud_mask.png"
 
-# Lock for thread-safe logging
+# Locks for thread-safe operations
 log_lock = threading.Lock()
+rate_limit_lock = threading.Lock()
+
+# Rate limiting state
+last_request_time = 0
 
 # --- Utilities ---
 
 def slugify(text):
     """
-    Convert text into a file-safe slug by removing non-alphanumeric characters 
+    Convert text into a file-safe slug by removing non-alphanumeric characters
     and replacing spaces with underscores.
     """
     text = text.lower()
@@ -53,13 +58,13 @@ def slugify(text):
 
 def parse_date(date_str):
     """
-    Attempts to parse Galnet date format (e.g., '21 April 3308') and returns 
-    a datetime object. Handles the conversion from Elite Dangerous years 
+    Attempts to parse Galnet date format (e.g., '21 April 3308') and returns
+    a datetime object. Handles the conversion from Elite Dangerous years
     to real-world years (Elite Year - 1286).
     """
     if not date_str or date_str == "unknown_date":
         return None
-    
+
     match = re.search(r'(\d{1,2})\s+([a-zA-Z]+)\s+(\d{4})', date_str)
     if match:
         day_str, month_str, year_str = match.groups()
@@ -67,7 +72,7 @@ def parse_date(date_str):
         # Elite Year -> Real Year conversion if needed
         real_year = year_int - 1286 if year_int > 3000 else year_int
         normalized_str = f"{day_str} {month_str} {real_year}"
-        
+
         for date_format in ("%d %b %Y", "%d %B %Y"):
             try:
                 return datetime.strptime(normalized_str, date_format)
@@ -77,14 +82,14 @@ def parse_date(date_str):
 
 def format_date_elite(date_object):
     """
-    Formats a datetime object into the Elite Dangerous Galnet format 
+    Formats a datetime object into the Elite Dangerous Galnet format
     (e.g., '21 April 3312').
     """
     return f"{date_object.day} {date_object.strftime('%B')} {date_object.year + 1286}" if date_object else "unknown_date"
 
 def set_file_timestamps(filepath, date_object):
     """
-    Sets the access and modified times of a file to match the article's 
+    Sets the access and modified times of a file to match the article's
     publication date.
     """
     if date_object:
@@ -96,7 +101,7 @@ def set_file_timestamps(filepath, date_object):
 
 def find_date_locally(header):
     """
-    Searches the local archive for an existing article with the same header 
+    Searches the local archive for an existing article with the same header
     to retrieve a previously found date.
     """
     if not os.path.exists(ARCHIVE_DIR): return None
@@ -112,7 +117,7 @@ def find_date_locally(header):
 
 def get_existing_article(header, date_str):
     """
-    Checks if an article with the given header and date already exists 
+    Checks if an article with the given header and date already exists
     in the local archive.
     """
     if date_str == "unknown_date":
@@ -131,11 +136,23 @@ def get_existing_article(header, date_str):
             pass
     return None
 
+def enforce_rate_limit():
+    """
+    Ensures that a minimum amount of time has passed since the last external request.
+    """
+    global last_request_time
+    with rate_limit_lock:
+        elapsed = time.time() - last_request_time
+        if elapsed < GLOBAL_RATE_LIMIT:
+            time.sleep(GLOBAL_RATE_LIMIT - elapsed)
+        last_request_time = time.time()
+
 def fetch_drinkybird_date(header, browser_context):
     """
-    Scrapes elite.drinkybird.net to find the publication date for an article 
+    Scrapes elite.drinkybird.net to find the publication date for an article
     header when it is missing from other sources.
     """
+    enforce_rate_limit()
     print(f"Searching Drinkybird for missing date: {header}")
     try:
         encoded_title = urllib.parse.quote(header)
@@ -159,10 +176,10 @@ def save_article(article_data, source_type):
     Merges data if a file with an 'unknown_date' already exists for this header.
     """
     os.makedirs(ARCHIVE_DIR, exist_ok=True)
-    
+
     header = article_data.get('header', 'no_header')
     date_object = parse_date(article_data.get('article_date'))
-    
+
     iso_prefix = date_object.strftime("%Y-%m-%d") if date_object else "unknown_date"
     filename = f"{iso_prefix}_{slugify(header)}.json"
     filepath = os.path.join(ARCHIVE_DIR, filename)
@@ -181,7 +198,7 @@ def save_article(article_data, source_type):
                 with open(unknown_path, 'r', encoding='utf-8') as file_handle:
                     legacy_data = json.load(file_handle)
                     for key, value in legacy_data.items():
-                        if value and not existing_data.get(key): 
+                        if value and not existing_data.get(key):
                             existing_data[key] = value
                 os.remove(unknown_path)
                 print(f"Merged and removed legacy unknown_date file for: {header}")
@@ -211,7 +228,7 @@ def save_article(article_data, source_type):
 
 def get_browser_context(playwright_instance):
     """
-    Initializes a Playwright browser instance and returns a browser context 
+    Initializes a Playwright browser instance and returns a browser context
     with a custom user agent.
     """
     browser = playwright_instance.chromium.launch(headless=True)
@@ -221,6 +238,7 @@ def _run_inara_scrape(page_number, browser_context):
     """
     Internal helper to scrape a single page of Galnet news from Inara.cz.
     """
+    enforce_rate_limit()
     url = f"https://inara.cz/elite/galnet/?page={page_number}"
     print(f"Scanning Inara page {page_number}...")
     page = browser_context.new_page()
@@ -242,7 +260,7 @@ def _run_inara_scrape(page_number, browser_context):
             header_text = header_element.get_text(strip=True)
             date_element = element.find('span', class_='date') or element.find('span', class_='text-muted')
             date_str = date_element.get_text(strip=True) if date_element else "unknown_date"
-            
+
             if date_str == "unknown_date":
                 local_date = find_date_locally(header_text)
                 date_str = local_date if local_date else fetch_drinkybird_date(header_text, browser_context)
@@ -264,7 +282,7 @@ def _run_inara_scrape(page_number, browser_context):
 
 def scrape_inara_page(page_number, browser_context=None):
     """
-    Public method to scrape a single page of Inara.cz Galnet news. 
+    Public method to scrape a single page of Inara.cz Galnet news.
     Manages Playwright lifecycle if no context is provided.
     """
     if browser_context:
@@ -277,9 +295,10 @@ def scrape_inara_page(page_number, browser_context=None):
 
 def _run_frontier_scrape(page_number, browser_context):
     """
-    Internal helper to scrape a single page of Galnet news from the official 
+    Internal helper to scrape a single page of Galnet news from the official
     Elite Dangerous news site.
     """
+    enforce_rate_limit()
     url = f"https://www.elitedangerous.com/news/galnet?page={page_number}"
     print(f"Scanning Frontier page {page_number}...")
     page = browser_context.new_page()
@@ -298,7 +317,7 @@ def _run_frontier_scrape(page_number, browser_context):
             header_text = header_element.get_text(strip=True)
             date_element = element.find('time', class_='datetime')
             date_str = date_element.get_text(strip=True) if date_element else "unknown_date"
-            
+
             if date_str == "unknown_date":
                 local_date = find_date_locally(header_text)
                 date_str = local_date if local_date else fetch_drinkybird_date(header_text, browser_context)
@@ -308,9 +327,10 @@ def _run_frontier_scrape(page_number, browser_context):
                 link_element = element.find('a', href=True)
                 article_url = "https://www.elitedangerous.com" + link_element['href'] if link_element else ""
                 body_text = ""
-                
+
                 if article_url:
                     article_page = browser_context.new_page()
+                    enforce_rate_limit()
                     try:
                         article_page.goto(article_url, timeout=60000)
                         article_page.wait_for_selector(".v-galnet-details__main-body", timeout=15000)
@@ -347,7 +367,7 @@ def scrape_frontier_page(page_number, browser_context=None):
 
 def sync_source(source_name, scrape_func, browser_context):
     """
-    Utility to scan a source sequentially starting from page 0 until 
+    Utility to scan a source sequentially starting from page 0 until
     no new articles are found.
     """
     print(f"\n--- Checking {source_name} ---")
@@ -361,7 +381,7 @@ def sync_source(source_name, scrape_func, browser_context):
 
 def fetch_new_articles():
     """
-    Fetches only new articles from both Inara and Frontier sources and 
+    Fetches only new articles from both Inara and Frontier sources and
     then updates the master JSON file.
     """
     print("\n=== Fetching New Galnet Articles ===")
@@ -377,7 +397,7 @@ def fetch_new_articles():
 
 def combine_json_files(output_file=MASTER_JSON):
     """
-    Rebuilds the master JSON file from the individual archive files, 
+    Rebuilds the master JSON file from the individual archive files,
     ensuring correct chronological order and uniqueness.
     """
     if not os.path.exists(ARCHIVE_DIR): return
@@ -392,14 +412,14 @@ def combine_json_files(output_file=MASTER_JSON):
 
     # Sort: Newest first (unknown dates at the bottom)
     all_articles.sort(key=lambda article: parse_date(article.get('article_date')).timestamp() if parse_date(article.get('article_date')) else 0, reverse=True)
-    
+
     with open(output_file, 'w', encoding='utf-8') as file_handle:
         json.dump(all_articles, file_handle, indent=4, ensure_ascii=False)
     print(f"Combined {len(all_articles)} articles into {output_file}")
 
 def fix_unknown_date_files():
     """
-    Identifies files in the archive with 'unknown_date' and attempts to 
+    Identifies files in the archive with 'unknown_date' and attempts to
     recover their publication dates using Drinkybird.
     """
     unknown_files = [f for f in os.listdir(ARCHIVE_DIR) if f.startswith("unknown_date") and f.endswith(".json")]
@@ -417,7 +437,7 @@ def fix_unknown_date_files():
                     article_data = json.load(file_handle)
                 header_text = article_data.get('header')
                 if not header_text: continue
-                
+
                 date_str = fetch_drinkybird_date(header_text, browser_context)
                 if date_str != "unknown_date":
                     article_data['article_date'] = date_str
@@ -438,7 +458,7 @@ def fix_maintenance(task_type):
     """
     if not os.path.exists(ARCHIVE_DIR): return
     files = [f for f in os.listdir(ARCHIVE_DIR) if f.endswith(".json")]
-    
+
     for filename in files:
         filepath = os.path.join(ARCHIVE_DIR, filename)
         try:
@@ -473,13 +493,13 @@ def core_generate_wordcloud(start_str=None, end_str=None, cloud_title=None):
     Uses custom fonts, stop words, and an optional image mask.
     """
     if not HAS_WORDCLOUD: return print("Error: wordcloud/matplotlib missing.")
-    
+
     start_date_object = parse_date(start_str) if start_str else None
     end_date_object = parse_date(end_str) if end_str else None
 
     text_content = []
     if not os.path.exists(ARCHIVE_DIR): return
-    
+
     for filename in os.listdir(ARCHIVE_DIR):
         if not filename.endswith(".json"): continue
         try:
@@ -496,22 +516,26 @@ def core_generate_wordcloud(start_str=None, end_str=None, cloud_title=None):
     if not text_content: return print(f"No articles for {cloud_title}")
 
     full_text = " ".join(text_content)
-    
+
     elite_stopwords = {
         "Galnet", "Elite", "Dangerous", "System", "Federation", "Empire", "Alliance", "Independent",
-        "article", "report", "news", "will", "one", "new", "said", "systems", "starport", "starports", 
-        "station", "stations", "commander", "commanders", "pilot", "pilots", "citizens", "people", 
-        "continue", "continues", "remains", "remain", "reporting", "reported", "spokesperson", 
-        "spokesman", "officials", "official", "stated", "claimed", "noted", "added", "announced", 
-        "confirmed", "according", "recently", "now", "current", "currently", "well", "may", 
-        "could", "should", "might", "can", "first", "many", "two", "three", "four", "five", 
-        "six", "seven", "eight", "nine", "ten", "last", "week", "year", "years", "month", 
-        "months", "day", "days", "time", "times", "part", "also", "including", "across", 
+        "article", "report", "news", "will", "one", "new", "said", "systems", "starport", "starports",
+        "station", "stations", "commander", "commanders", "pilot", "pilots", "citizens", "people",
+        "continue", "continues", "remains", "remain", "reporting", "reported", "spokesperson",
+        "spokesman", "officials", "official", "stated", "claimed", "noted", "added", "announced",
+        "confirmed", "according", "recently", "now", "current", "currently", "well", "may",
+        "could", "should", "might", "can", "first", "many", "two", "three", "four", "five",
+        "six", "seven", "eight", "nine", "ten", "last", "week", "year", "years", "month",
+        "months", "day", "days", "time", "times", "part", "also", "including", "across",
         "number", "several", "known", "seen", "made", "become", "since", "within", "around"
     }
-    
+
     custom_stopwords = set(STOPWORDS).union(elite_stopwords)
-    selected_font = random.choice([path for path in FONT_PATHS if os.path.exists(path)]) if FONT_PATHS else None
+
+    # Use os.path.expanduser to correctly handle '~' in font paths
+    valid_font_paths = [os.path.expanduser(path) for path in FONT_PATHS if os.path.exists(os.path.expanduser(path))]
+    selected_font = random.choice(valid_font_paths) if valid_font_paths else None
+
     mask_image = np.array(Image.open(MASK_PATH)) if MASK_PATH and os.path.exists(MASK_PATH) else None
 
     wordcloud = WordCloud(
@@ -529,7 +553,7 @@ def core_generate_wordcloud(start_str=None, end_str=None, cloud_title=None):
     plt.axis("off")
     if cloud_title:
         plt.title(cloud_title, color='#FF8C00', fontsize=30, fontweight='bold', pad=20)
-    
+
     timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
     safe_title = slugify(cloud_title) if cloud_title else "cloud"
     output_path = f"wordcloud_{safe_title}_{timestamp_str}.png"
@@ -575,10 +599,10 @@ def main_menu():
         print("8. Generate Custom Word Cloud")
         print("9. Generate Yearly Word Clouds (3300-3312)")
         print("0. Quit")
-        
+
         choice = input("\nEnter choice: ").strip()
         if choice == '0': break
-        
+
         if choice == '1':
             fetch_new_articles()
         elif choice in ('2', '3'):

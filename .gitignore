@@ -5,7 +5,6 @@ __pycache__/
 
 # Local Data Archive
 GalnetNewsArchive/*.json
-galnet_news_full.json
 
 # Generated Word Clouds
 wordcloud_*.png

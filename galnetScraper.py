@@ -19,13 +19,20 @@ try:
 except ImportError:
     HAS_WORDCLOUD = False
 
+try:
+    import py7zr
+    HAS_PY7ZR = True
+except ImportError:
+    HAS_PY7ZR = False
+
 # --- Configuration ---
 ARCHIVE_DIR = "GalnetNewsArchive"
 MASTER_JSON = "galnet_news_full.json"
+MASTER_7Z = "galnet_news_full.7z"
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36"
 GLOBAL_RATE_LIMIT = 1.0  # Seconds between requests to any external source
 
-# List of paths to .ttf or .otf font files.
+# List of paths to .ttf or .otf font files. 
 FONT_PATHS = [
     "~/.local/share/fonts/n/NanamiPro_Normal.otf",
     "~/.local/share/fonts/e/EUROCAPS.ttf",
@@ -395,10 +402,11 @@ def fetch_new_articles():
 
 # --- Maintenance ---
 
-def combine_json_files(output_file=MASTER_JSON):
+def combine_json_files(output_file=MASTER_JSON, create_7z=True):
     """
     Rebuilds the master JSON file from the individual archive files,
     ensuring correct chronological order and uniqueness.
+    Optionally creates a 7-zip archive of the result.
     """
     if not os.path.exists(ARCHIVE_DIR): return
     print(f"Updating {output_file}...")
@@ -416,6 +424,19 @@ def combine_json_files(output_file=MASTER_JSON):
     with open(output_file, 'w', encoding='utf-8') as file_handle:
         json.dump(all_articles, file_handle, indent=4, ensure_ascii=False)
     print(f"Combined {len(all_articles)} articles into {output_file}")
+
+    if create_7z:
+        if not HAS_PY7ZR:
+            print("Warning: py7zr not installed. Skipping 7z creation.")
+            return
+        
+        print(f"Creating 7z archive: {MASTER_7Z}...")
+        try:
+            with py7zr.SevenZipFile(MASTER_7Z, 'w') as archive:
+                archive.write(output_file, arcname=output_file)
+            print(f"Successfully archived to {MASTER_7Z}")
+        except Exception as error:
+            print(f"Error creating 7z archive: {error}")
 
 def fix_unknown_date_files():
     """
@@ -594,7 +615,7 @@ def main_menu():
         print("3. Bulk Scrape Frontier Galnet (Page Range)")
         print("4. Rename Files & Sync Timestamps")
         print("5. Fix Unknown Date Files (Search Drinkybird)")
-        print("6. Combine All into Single JSON")
+        print("6. Combine All into Single JSON & 7z")
         print("7. Normalize Dates")
         print("8. Generate Custom Word Cloud")
         print("9. Generate Yearly Word Clouds (3300-3312)")
@@ -616,7 +637,9 @@ def main_menu():
             except: print("Invalid input.")
         elif choice == '4': fix_maintenance("rename")
         elif choice == '5': fix_unknown_date_files()
-        elif choice == '6': combine_json_files()
+        elif choice == '6': 
+            use_7z = input("Create 7z archive? (Y/n): ").strip().lower() != 'n'
+            combine_json_files(create_7z=use_7z)
         elif choice == '7': fix_maintenance("normalize")
         elif choice == '8': run_custom_wordcloud()
         elif choice == '9': run_yearly_wordclouds()

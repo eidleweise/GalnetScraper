@@ -4,3 +4,4 @@ numpy
 Pillow
 wordcloud
 matplotlib
+py7zr

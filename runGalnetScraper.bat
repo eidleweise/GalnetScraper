@@ -16,6 +16,6 @@ echo Ensuring Playwright browsers are installed...
 playwright install
 
 echo Starting Galnet Scraper...
-python galnetScraper.py
+python galnet_scraper.py
 
 pause

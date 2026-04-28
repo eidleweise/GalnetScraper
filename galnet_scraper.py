@@ -1,17 +1,18 @@
 import json
-import os
-import re
-import time
-import threading
-import urllib.parse
 import logging
+import os
 import random
-from pathlib import Path
-from datetime import datetime
-from typing import List, Dict, Optional, Tuple, Any, Callable
+import re
+import threading
+import time
+import urllib.parse
 from concurrent.futures import ThreadPoolExecutor
-from playwright.sync_api import sync_playwright, BrowserContext, Page, TimeoutError as PlaywrightTimeoutError
+from datetime import datetime
+from pathlib import Path
+from typing import List, Dict, Optional, Tuple, Any, Callable
+
 from bs4 import BeautifulSoup
+from playwright.sync_api import sync_playwright, BrowserContext, TimeoutError as PlaywrightTimeoutError
 
 # --- Logging Configuration ---
 logging.basicConfig(
@@ -456,7 +457,7 @@ def fetch_drinkybird_date(article_header: str, browser_context: BrowserContext) 
             logger.info(f"Drinkybird found date: {found_date_string}")
             return found_date_string
     except Exception as error:
-        logger.error(f"Drinkybird search failed for '{article_header}': {e}")
+        logger.error(f"Drinkybird search failed for '{article_header}': {error}")
     return "unknown_date"
 
 

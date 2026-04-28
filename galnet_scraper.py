@@ -197,12 +197,12 @@ def load_article_index(force_reload: bool = False):
                 logger.warning(f"Could not load {article_file_path} into index: {e}")
 
         total_articles = sum(len(articles) for articles in article_index_cache.values())
-        logger.info(f"Index populated: {total_articles} articles across {len(article_index_cache)} unique slugs.")
+        logger.debug(f"Index populated: {total_articles} articles across {len(article_index_cache)} unique slugs.")
 
         if article_index_cache:
             sample_size = min(len(article_index_cache), random.randint(5, 10))
             sample_keys = random.sample(list(article_index_cache.keys()), sample_size)
-            logger.info(f"Random sample of {sample_size} index entries:")
+            logger.debug(f"Random sample of {sample_size} index entries:")
             for key in sample_keys:
                 logger.debug(f"Slug: {key}\nArticles: {json.dumps(article_index_cache[key], indent=2, default=str)}")
         else:

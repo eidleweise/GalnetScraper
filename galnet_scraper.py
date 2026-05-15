@@ -1051,6 +1051,93 @@ def fix_unknown_dates_cli_handler(browser_context: BrowserContext = None):
     perform_maintenance_task("unknown_date", browser_context=browser_context)
 
 
+def execute_menu_choice(user_choice: str):
+    """
+    Executes a single menu action by choice number.
+    Returns True if the choice was valid and executed, False otherwise.
+    """
+    if user_choice == '1':
+        sync_all_sources()
+    elif user_choice == '2':
+        force_sync_all_articles()
+    elif user_choice == '3':
+        try:
+            start_index = int(input("Enter Start Page (default 1): ") or 1)
+            end_index = int(input("Enter End Page (default 10): ") or 10)
+
+            load_article_index(force_reload=True)
+            with sync_playwright() as playwright_instance:
+                browser = playwright_instance.chromium.launch(headless=True)
+                browser_context = browser.new_context(user_agent=Config.USER_AGENT)
+                try:
+                    with ThreadPoolExecutor(max_workers=5) as executor:
+                        list(executor.map(lambda idx: scrape_frontier_page(idx, browser_context=browser_context),
+                                          range(start_index, end_index + 1)))
+                finally:
+                    browser.close()
+            combine_json_files()
+        except ValueError:
+            logger.error("Invalid input. Please enter integer values for page ranges.")
+        except Exception as ex:
+            logger.error(f"An unexpected error occurred during bulk scraping: {ex}")
+    elif user_choice == '4':
+        try:
+            start_index = int(input("Enter Start Index (default 0): ") or 0)
+            end_index = int(input("Enter End Index (default 10): ") or 10)
+
+            load_article_index(force_reload=True)
+            with sync_playwright() as playwright_instance:
+                browser = playwright_instance.chromium.launch(headless=True)
+                browser_context = browser.new_context(user_agent=Config.USER_AGENT)
+                try:
+                    scrape_community_page(0, browser_context=browser_context)
+                    with ThreadPoolExecutor(max_workers=5) as executor:
+                        list(executor.map(lambda idx: scrape_community_page(idx, browser_context=browser_context),
+                                          range(start_index, end_index + 1)))
+                finally:
+                    browser.close()
+            combine_json_files()
+        except ValueError:
+            logger.error("Invalid input. Please enter integer values for index ranges.")
+        except Exception as ex:
+            logger.error(f"An unexpected error occurred during bulk scraping: {ex}")
+    elif user_choice == '5':
+        try:
+            start_index = int(input("Enter Start Page (default 1): ") or 1)
+            end_index = int(input("Enter End Page (default 10): ") or 10)
+
+            load_article_index(force_reload=True)
+            with sync_playwright() as playwright_instance:
+                browser = playwright_instance.chromium.launch(headless=True)
+                browser_context = browser.new_context(user_agent=Config.USER_AGENT)
+                try:
+                    with ThreadPoolExecutor(max_workers=5) as executor:
+                        list(executor.map(lambda idx: scrape_inara_page(idx, browser_context=browser_context),
+                                          range(start_index, end_index + 1)))
+                finally:
+                    browser.close()
+            combine_json_files()
+        except ValueError:
+            logger.error("Invalid input. Please enter integer values for page ranges.")
+        except Exception as ex:
+            logger.error(f"An unexpected error occurred during bulk scraping: {ex}")
+    elif user_choice == '6':
+        perform_maintenance_task("rename")
+    elif user_choice == '7':
+        fix_unknown_dates_cli_handler()
+    elif user_choice == '8':
+        create_7z_input = input("Create 7z archive? (Y/n): ").strip().lower()
+        should_create_7z = create_7z_input != 'n'
+        combine_json_files(create_7z_archive=should_create_7z)
+    elif user_choice == '9':
+        perform_maintenance_task("normalize")
+    elif user_choice == '10':
+        perform_maintenance_task("remove_duplicates")
+    else:
+        return False
+    return True
+
+
 def main_menu():
     """
     The main interactive menu for the Galnet Scraper tool.
@@ -1073,87 +1160,20 @@ def main_menu():
         if user_choice == '0':
             break
 
-        if user_choice == '1':
-            sync_all_sources()
-        elif user_choice == '2':
-            force_sync_all_articles()
-        elif user_choice == '3': # Frontier
-            try:
-                start_index = int(input("Enter Start Page (default 1): ") or 1)
-                end_index = int(input("Enter End Page (default 10): ") or 10)
-                
-                load_article_index(force_reload=True)
-                with sync_playwright() as playwright_instance:
-                    browser = playwright_instance.chromium.launch(headless=True)
-                    browser_context = browser.new_context(user_agent=Config.USER_AGENT)
-                    try:
-                        with ThreadPoolExecutor(max_workers=5) as executor:
-                            list(executor.map(lambda idx: scrape_frontier_page(idx, browser_context=browser_context),
-                                              range(start_index, end_index + 1)))
-                    finally:
-                        browser.close()
-                combine_json_files()
-            except ValueError:
-                logger.error("Invalid input. Please enter integer values for page ranges.")
-            except Exception as ex:
-                logger.error(f"An unexpected error occurred during bulk scraping: {ex}")
-        elif user_choice == '4': # Community
-            try:
-                start_index = int(input("Enter Start Index (default 0): ") or 0)
-                end_index = int(input("Enter End Index (default 10): ") or 10)
-
-                load_article_index(force_reload=True)
-                with sync_playwright() as playwright_instance:
-                    browser = playwright_instance.chromium.launch(headless=True)
-                    browser_context = browser.new_context(user_agent=Config.USER_AGENT)
-                    try:
-                        # Initialize community_hrefs once
-                        scrape_community_page(0, browser_context=browser_context)
-                        with ThreadPoolExecutor(max_workers=5) as executor:
-                            list(executor.map(lambda idx: scrape_community_page(idx, browser_context=browser_context),
-                                              range(start_index, end_index + 1)))
-                    finally:
-                        browser.close()
-                combine_json_files()
-            except ValueError:
-                logger.error("Invalid input. Please enter integer values for index ranges.")
-            except Exception as ex:
-                logger.error(f"An unexpected error occurred during bulk scraping: {ex}")
-        elif user_choice == '5': # Inara
-            try:
-                start_index = int(input("Enter Start Page (default 1): ") or 1)
-                end_index = int(input("Enter End Page (default 10): ") or 10)
-
-                load_article_index(force_reload=True)
-                with sync_playwright() as playwright_instance:
-                    browser = playwright_instance.chromium.launch(headless=True)
-                    browser_context = browser.new_context(user_agent=Config.USER_AGENT)
-                    try:
-                        with ThreadPoolExecutor(max_workers=5) as executor:
-                            list(executor.map(lambda idx: scrape_inara_page(idx, browser_context=browser_context),
-                                              range(start_index, end_index + 1)))
-                    finally:
-                        browser.close()
-                combine_json_files()
-            except ValueError:
-                logger.error("Invalid input. Please enter integer values for page ranges.")
-            except Exception as ex:
-                logger.error(f"An unexpected error occurred during bulk scraping: {ex}")
-        elif user_choice == '6':
-            perform_maintenance_task("rename")
-        elif user_choice == '7':
-            fix_unknown_dates_cli_handler()
-        elif user_choice == '8':
-            create_7z_input = input("Create 7z archive? (Y/n): ").strip().lower()
-            should_create_7z = create_7z_input != 'n'
-            combine_json_files(create_7z_archive=should_create_7z)
-        elif user_choice == '9':
-            perform_maintenance_task("normalize")
-        elif user_choice == '10':
-            perform_maintenance_task("remove_duplicates")
-        else:
+        if not execute_menu_choice(user_choice):
             print("Invalid choice. Please try again.")
 
 
 if __name__ == "__main__":
-    main_menu()
+    import sys
+
+    if len(sys.argv) > 1:
+        choice = sys.argv[1].strip()
+        logger.info(f"Running menu option {choice} from command line argument...")
+        if not execute_menu_choice(choice):
+            logger.error(f"Invalid menu option: {choice}")
+            sys.exit(1)
+        logger.info("Done. Exiting in 5 seconds...")
+        time.sleep(5)
+    else:
+        main_menu()

@@ -1,6 +1,6 @@
 # Galnet Scraper
 
-A tool to archive Galnet news articles from various sources, created because up-to-date RSS feeds for Elite Dangerous news have become difficult to find.
+A tool to archive Galnet news articles from various sources, created because up-to-date RSS feeds for Elite Dangerous news have become difficult to find. For other users I've also added the galnet_news_full.json and zip file, mostly for posterity.
 
 ## Credits & Data Sources
 

@@ -1051,6 +1051,65 @@ def fix_unknown_dates_cli_handler(browser_context: BrowserContext = None):
     perform_maintenance_task("unknown_date", browser_context=browser_context)
 
 
+def json_to_markdown(input_file: Optional[Path] = None, output_file: Optional[Path] = None) -> None:
+    """
+    Converts a JSON file of Galnet articles to a markdown file.
+    
+    Args:
+        input_file: Path to JSON file (defaults to Config.MASTER_JSON_FILE)
+        output_file: Path to output markdown file (defaults to galnet_news_full.md)
+    """
+    input_path = input_file or Config.MASTER_JSON_FILE
+    output_path = output_file or Path("galnet_news_full.md")
+    
+    if not input_path.exists():
+        logger.error(f"Input file not found: {input_path}")
+        return
+    
+    try:
+        with open(input_path, 'r', encoding='utf-8') as f:
+            articles = json.load(f)
+        
+        logger.info(f"Loaded {len(articles)} articles from {input_path}")
+        
+        with open(output_path, 'w', encoding='utf-8') as f:
+            f.write("# Galnet News Archive\n\n")
+            f.write(f"*Converted from JSON: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}*\n\n")
+            f.write(f"**Total Articles:** {len(articles)}\n\n")
+            f.write("---\n\n")
+            
+            for idx, article in enumerate(articles, 1):
+                header = article.get('header', 'Untitled')
+                body = article.get('body', '')
+                article_date = article.get('article_date', 'Unknown Date')
+                source = article.get('source', 'unknown')
+                tags = article.get('tags', [])
+                article_url = article.get('article_url', '')
+                
+                f.write(f"## {idx}. {header}\n\n")
+                
+                f.write(f"**Date:** {article_date}  \n")
+                f.write(f"**Source:** {source}  \n")
+                
+                if tags:
+                    f.write(f"**Tags:** {', '.join(tags)}  \n")
+                
+                if article_url:
+                    f.write(f"**Link:** [{article_url}]({article_url})  \n")
+                
+                f.write("\n")
+                f.write(f"{body}\n\n")
+                f.write("---\n\n")
+        
+        logger.info(f"Successfully converted JSON to markdown: {output_path}")
+        print(f"\n✓ Markdown file created: {output_path}")
+        
+    except json.JSONDecodeError as e:
+        logger.error(f"Invalid JSON file: {e}")
+    except Exception as e:
+        logger.error(f"Error converting JSON to markdown: {e}")
+
+
 def execute_menu_choice(user_choice: str):
     """
     Executes a single menu action by choice number.
@@ -1133,6 +1192,8 @@ def execute_menu_choice(user_choice: str):
         perform_maintenance_task("normalize")
     elif user_choice == '10':
         perform_maintenance_task("remove_duplicates")
+    elif user_choice == '11':
+        json_to_markdown()
     else:
         return False
     return True
@@ -1154,6 +1215,7 @@ def main_menu():
         print("8. Rebuild Master JSON & 7z Archive")
         print("9. Normalize Dates (Elite Format)")
         print("10. Remove Duplicate Articles")
+        print("11. Convert JSON to Markdown")
         print("0. Quit")
 
         user_choice = input("\nEnter your choice: ").strip()

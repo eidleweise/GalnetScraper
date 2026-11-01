@@ -582,7 +582,8 @@ def get_galnet_date_range(page_index: int, base_date: datetime = None) -> Tuple[
 
 def scrape_frontier_range(from_date: str, to_date: str, browser_context: BrowserContext) -> Tuple[int, int]:
     """
-    Scrapes Galnet news using the shared browser context with resilient selector fallbacks.
+    Scrapes Galnet news using the shared browser context.
+    Directly parses dynamic SPA DOM elements without waiting for deprecated selectors.
     """
     enforce_global_rate_limit()
 
@@ -595,38 +596,36 @@ def scrape_frontier_range(from_date: str, to_date: str, browser_context: Browser
     found_article_count = 0
 
     try:
-        # Use domcontentloaded instead of networkidle to prevent script hanging
-        page.goto(target_url, timeout=60000, wait_until="domcontentloaded")
-
-        # Wait for either article tags OR any anchor linking to a galnet article
-        try:
-            page.wait_for_selector("article, [class*='galnet'], a[href*='/news/galnet/']", timeout=15000)
-        except PlaywrightTimeoutError:
-            logger.warning(
-                f"Timeout waiting for article selectors for range {from_date} to {to_date}. Attempting raw content parse...")
-
-        # Small pause for Vue hydration
+        # Fast navigation - wait until DOM is ready, then allow a short window for Nuxt/Vue hydration
+        page.goto(target_url, timeout=45000, wait_until="domcontentloaded")
         page.wait_for_timeout(2500)
 
         soup = BeautifulSoup(page.content(), 'html.parser')
 
-        # Broader target: Find article elements OR elements containing article links
-        article_elements = soup.find_all('article')
-        if not article_elements:
-            # Fallback for Vue components wrapping cards in non-article elements
-            article_elements = soup.select("[class*='card'], [class*='article'], [class*='galnet-item']")
+        # Select links pointing to galnet detail pages
+        article_links = soup.select("a[href*='/news/galnet/']")
+        seen_urls = set()
 
-        for article_element in article_elements:
-            header_element = article_element.find(['h1', 'h2', 'h3', 'h4', 'h5'])
-            if not header_element:
+        for link in article_links:
+            raw_href = link.get('href')
+            if not raw_href:
+                continue
+            href = str(raw_href[0]) if isinstance(raw_href, list) else str(raw_href)
+            if not href or href in seen_urls:
+                continue
+            seen_urls.add(href)
+
+            header_elem = link.find(['h1', 'h2', 'h3', 'h4']) or link
+            article_header_text = header_elem.get_text(strip=True)
+            if not article_header_text or len(article_header_text) < 5:
                 continue
 
             found_article_count += 1
-            article_header_text = header_element.get_text(strip=True)
 
-            date_element = article_element.find('time') or article_element.find(
-                class_=lambda c: c and 'date' in c.lower() if c else False)
-            article_date_string = date_element.get_text(strip=True) if date_element else "unknown_date"
+            # Locate parent card to grab date
+            parent = link.find_parent(['article', 'div']) or link
+            date_elem = parent.find('time') or parent.select_one("[class*='date'], [class*='time']")
+            article_date_string = date_elem.get_text(strip=True) if date_elem else "unknown_date"
 
             if article_date_string == "unknown_date":
                 article_date_string = find_date_locally(article_header_text) or fetch_drinkybird_date(
@@ -634,49 +633,42 @@ def scrape_frontier_range(from_date: str, to_date: str, browser_context: Browser
                 )
 
             existing_best_match, _ = get_existing_article_from_index(article_header_text, article_date_string)
-
-            article_link_element = article_element.find('a',
-                                                        href=True) if article_element.name != 'a' else article_element
-            article_full_url = urllib.parse.urljoin("https://www.elitedangerous.com", article_link_element[
-                'href']) if article_link_element and article_link_element.get('href') else ""
+            article_full_url = urllib.parse.urljoin("https://www.elitedangerous.com", href)
 
             article_body_text = ""
             is_body_scrape_successful = False
 
             if article_full_url:
-                article_detail_page = browser_context.new_page()
+                detail_page = browser_context.new_page()
                 enforce_global_rate_limit()
                 try:
-                    article_detail_page.goto(article_full_url, timeout=45000, wait_until="domcontentloaded")
-                    article_detail_page.wait_for_timeout(1500)
+                    detail_page.goto(article_full_url, timeout=30000, wait_until="domcontentloaded")
+                    detail_page.wait_for_timeout(1500)
 
-                    article_detail_soup = BeautifulSoup(article_detail_page.content(), 'html.parser')
-                    body_content_element = (
-                            article_detail_soup.select_one("[class*='galnet-details']") or
-                            article_detail_soup.select_one("[class*='body']") or
-                            article_detail_soup.find('main') or
-                            article_detail_soup.find('article')
+                    detail_soup = BeautifulSoup(detail_page.content(), 'html.parser')
+                    body_elem = (
+                            detail_soup.select_one("[class*='galnet-details']") or
+                            detail_soup.find('main') or
+                            detail_soup.find('article') or
+                            detail_soup.select_one("[class*='body']")
                     )
 
-                    if body_content_element:
-                        extracted_body = "\n\n".join([
-                            paragraph.get_text(strip=True) for paragraph in body_content_element.find_all('p')
-                            if paragraph.get_text(strip=True)
-                        ])
-                        if extracted_body:
-                            article_body_text = extracted_body
+                    if body_elem:
+                        paragraphs = [p.get_text(strip=True) for p in body_elem.find_all('p') if p.get_text(strip=True)]
+                        if paragraphs:
+                            article_body_text = "\n\n".join(paragraphs)
                             is_body_scrape_successful = True
                 except Exception as e:
-                    logger.warning(f"Failed body scrape for article {article_full_url}: {e}")
+                    logger.warning(f"Failed body scrape for {article_full_url}: {e}")
                 finally:
-                    article_detail_page.close()
+                    detail_page.close()
 
-            should_save_frontier_version = True
+            should_save = True
             if not is_body_scrape_successful and existing_best_match and existing_best_match.get("body"):
-                should_save_frontier_version = False
-                logger.info(f"Skipping Frontier article '{article_header_text}' due to empty body.")
+                should_save = False
+                logger.info(f"Skipping article '{article_header_text}' due to empty body.")
 
-            if should_save_frontier_version:
+            if should_save:
                 article_data = {
                     "header": article_header_text,
                     "body": article_body_text,
@@ -687,12 +679,12 @@ def scrape_frontier_range(from_date: str, to_date: str, browser_context: Browser
                     processed_article_count += 1
 
         return found_article_count, processed_article_count
+
     except Exception as e:
-        logger.error(f"Error scraping Frontier date range {from_date} to {to_date}: {e}")
+        logger.error(f"Error scraping Frontier range {from_date} to {to_date}: {e}")
         return 0, 0
     finally:
         page.close()
-
 
 def fetch_frontier_galnet_api(from_date: str, to_date: str) -> Tuple[int, int]:
     """

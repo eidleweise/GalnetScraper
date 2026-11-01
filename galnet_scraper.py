@@ -9,9 +9,12 @@ import urllib.parse
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
-from typing import List, Dict, Optional, Tuple, Any, Callable
+from typing import Optional, Any, Callable
+from typing import Tuple, List, Dict
 
+import requests
 from bs4 import BeautifulSoup
+from dateutil.relativedelta import relativedelta  # pip install python-dateutil
 from playwright.sync_api import sync_playwright, BrowserContext, TimeoutError as PlaywrightTimeoutError
 
 # --- Logging Configuration ---
@@ -536,50 +539,107 @@ def scrape_inara_page(page_number: int, browser_context: BrowserContext = None) 
 
 @playwright_browser_session
 def scrape_frontier_page(page_number: int, browser_context: BrowserContext = None) -> Tuple[int, int]:
+    from_date_str, to_date_str = get_galnet_date_range(page_number, base_date=datetime.now())
+    return scrape_frontier_range(from_date_str, to_date_str, browser_context)
+
+
+def get_galnet_date_range(page_index: int, base_date: datetime = None) -> Tuple[str, str]:
     """
-    Scrapes a single page of Galnet news from the official Elite Dangerous news site.
-    Returns (found_count, processed_count).
+    Converts a page/chunk index into Elite Dangerous date-range parameters.
+    - Page 0: From 1st of previous month to Today.
+    - Page 1: From 1st of two months prior to 1st of previous month.
+    - Page N: Shifts backward by monthly blocks.
+
+    Returns a tuple of string dates formatted as ("YYYY-MM-DD", "YYYY-MM-DD").
+    """
+    if base_date is None:
+        base_date = datetime.now()
+
+    # Elite Dangerous timeline is real-world date + 1286 years
+    ED_YEAR_OFFSET = 1286
+
+    if page_index == 0:
+        # End date is real-world today
+        end_real = base_date
+
+        # Start date is the 1st of the previous month
+        start_real = (base_date.replace(day=1) - relativedelta(months=1))
+    else:
+        # For subsequent pages, step back chunk by chunk monthly
+        # Page 1 shifts back starting from previous month's 1st
+        end_real = (base_date.replace(day=1) - relativedelta(months=page_index - 1))
+        start_real = (base_date.replace(day=1) - relativedelta(months=page_index))
+
+    # Apply Elite Dangerous year conversion (+1286 years)
+    ed_start_year = start_real.year + ED_YEAR_OFFSET
+    ed_end_year = end_real.year + ED_YEAR_OFFSET
+
+    from_date_str = f"{ed_start_year}-{start_real.month:02d}-{start_real.day:02d}"
+    to_date_str = f"{ed_end_year}-{end_real.month:02d}-{end_real.day:02d}"
+
+    return from_date_str, to_date_str
+
+
+def scrape_frontier_range(from_date: str, to_date: str, browser_context: BrowserContext) -> Tuple[int, int]:
+    """
+    Scrapes Galnet news using the shared browser context with resilient selector fallbacks.
     """
     enforce_global_rate_limit()
-    target_url = f"https://www.elitedangerous.com/news/galnet?page={page_number}"
-    logger.info(f"Scanning Frontier page {page_number} ({target_url})...")
+
+    params = {"from": from_date, "to": to_date, "sort": "desc"}
+    target_url = f"https://www.elitedangerous.com/news/galnet?{urllib.parse.urlencode(params)}"
+    logger.info(f"Scanning Frontier date range {from_date} to {to_date} ({target_url})...")
+
     page = browser_context.new_page()
     processed_article_count = 0
     found_article_count = 0
+
     try:
-        page.goto(target_url, timeout=60000)
+        # Use domcontentloaded instead of networkidle to prevent script hanging
+        page.goto(target_url, timeout=60000, wait_until="domcontentloaded")
+
+        # Wait for either article tags OR any anchor linking to a galnet article
         try:
-            page.wait_for_selector("article.o-news-article", timeout=30000)
+            page.wait_for_selector("article, [class*='galnet'], a[href*='/news/galnet/']", timeout=15000)
         except PlaywrightTimeoutError:
-            logger.warning(f"Timeout waiting for articles on Frontier page {page_number}. Page might be empty or slow.")
-            return 0, 0
-        except Exception as e:
-            logger.error(f"Error waiting for Frontier articles on page {page_number}: {e}")
-            return 0, 0
+            logger.warning(
+                f"Timeout waiting for article selectors for range {from_date} to {to_date}. Attempting raw content parse...")
+
+        # Small pause for Vue hydration
+        page.wait_for_timeout(2500)
 
         soup = BeautifulSoup(page.content(), 'html.parser')
-        article_elements = soup.find_all('article', class_='o-news-article')
+
+        # Broader target: Find article elements OR elements containing article links
+        article_elements = soup.find_all('article')
+        if not article_elements:
+            # Fallback for Vue components wrapping cards in non-article elements
+            article_elements = soup.select("[class*='card'], [class*='article'], [class*='galnet-item']")
 
         for article_element in article_elements:
-            header_element = article_element.find('h3')
-            if not header_element: continue
-            
-            # Found a valid article header
+            header_element = article_element.find(['h1', 'h2', 'h3', 'h4', 'h5'])
+            if not header_element:
+                continue
+
             found_article_count += 1
-            
             article_header_text = header_element.get_text(strip=True)
-            date_element = article_element.find('time', class_='datetime')
+
+            date_element = article_element.find('time') or article_element.find(
+                class_=lambda c: c and 'date' in c.lower() if c else False)
             article_date_string = date_element.get_text(strip=True) if date_element else "unknown_date"
 
             if article_date_string == "unknown_date":
                 article_date_string = find_date_locally(article_header_text) or fetch_drinkybird_date(
-                    article_header_text, browser_context)
+                    article_header_text, browser_context
+                )
 
             existing_best_match, _ = get_existing_article_from_index(article_header_text, article_date_string)
 
-            article_link_element = article_element.find('a', href=True)
+            article_link_element = article_element.find('a',
+                                                        href=True) if article_element.name != 'a' else article_element
             article_full_url = urllib.parse.urljoin("https://www.elitedangerous.com", article_link_element[
-                'href']) if article_link_element else ""
+                'href']) if article_link_element and article_link_element.get('href') else ""
+
             article_body_text = ""
             is_body_scrape_successful = False
 
@@ -587,30 +647,34 @@ def scrape_frontier_page(page_number: int, browser_context: BrowserContext = Non
                 article_detail_page = browser_context.new_page()
                 enforce_global_rate_limit()
                 try:
-                    article_detail_page.goto(article_full_url, timeout=60000)
-                    article_detail_page.wait_for_selector(".v-galnet-details__main-body", timeout=15000)
+                    article_detail_page.goto(article_full_url, timeout=45000, wait_until="domcontentloaded")
+                    article_detail_page.wait_for_timeout(1500)
+
                     article_detail_soup = BeautifulSoup(article_detail_page.content(), 'html.parser')
-                    body_content_element = article_detail_soup.select_one(".v-galnet-details__main-body")
+                    body_content_element = (
+                            article_detail_soup.select_one("[class*='galnet-details']") or
+                            article_detail_soup.select_one("[class*='body']") or
+                            article_detail_soup.find('main') or
+                            article_detail_soup.find('article')
+                    )
+
                     if body_content_element:
                         extracted_body = "\n\n".join([
                             paragraph.get_text(strip=True) for paragraph in body_content_element.find_all('p')
                             if paragraph.get_text(strip=True)
                         ])
-                        if extracted_body:  # Only consider successful if content is not empty
+                        if extracted_body:
                             article_body_text = extracted_body
                             is_body_scrape_successful = True
                 except Exception as e:
-                    logger.warning(f"Failed body scrape for Frontier article {article_full_url}: {e}")
+                    logger.warning(f"Failed body scrape for article {article_full_url}: {e}")
                 finally:
                     article_detail_page.close()
 
             should_save_frontier_version = True
             if not is_body_scrape_successful and existing_best_match and existing_best_match.get("body"):
-                # If Frontier failed to get a body, but an existing (lower priority) article has one,
-                # we should NOT overwrite it with the empty Frontier body.
                 should_save_frontier_version = False
-                logger.info(
-                    f"Skipping Frontier article '{article_header_text}' due to empty body, existing article has content.")
+                logger.info(f"Skipping Frontier article '{article_header_text}' due to empty body.")
 
             if should_save_frontier_version:
                 article_data = {
@@ -621,12 +685,83 @@ def scrape_frontier_page(page_number: int, browser_context: BrowserContext = Non
                 }
                 if save_article_to_archive(article_data, "Frontier"):
                     processed_article_count += 1
+
         return found_article_count, processed_article_count
     except Exception as e:
-        logger.error(f"Error scraping Frontier page {page_number}: {e}")
+        logger.error(f"Error scraping Frontier date range {from_date} to {to_date}: {e}")
         return 0, 0
     finally:
         page.close()
+
+
+def fetch_frontier_galnet_api(from_date: str, to_date: str) -> Tuple[int, int]:
+    """
+    Fetches Galnet articles directly from Frontier's backend JSON API.
+    Bypasses Playwright, HTML scraping, and selector timeouts.
+    """
+    enforce_global_rate_limit()
+
+    # Frontier API Endpoint
+    api_url = "https://elitedangerous-website-backend-production.elitedangerous.com/api/galnet"
+    params = {
+        "_format": "json",
+        "lang": "en",
+        "from": from_date,
+        "to": to_date
+    }
+
+    headers = {
+        "User-Agent": Config.USER_AGENT,
+        "Accept": "application/json"
+    }
+
+    found_article_count = 0
+    processed_article_count = 0
+
+    try:
+        response = requests.get(api_url, params=params, headers=headers, timeout=15)
+        response.raise_for_status()
+        articles_data = response.json()
+
+        # If API returns wrapped list/dict
+        if isinstance(articles_data, dict):
+            articles_list = articles_data.get("data", []) or articles_data.get("items", [])
+        else:
+            articles_list = articles_data
+
+        for item in articles_list:
+            found_article_count += 1
+
+            # Extract fields directly from JSON
+            article_header_text = item.get("title") or item.get("header") or ""
+            article_body_text = item.get("body") or item.get("content") or ""
+            article_date_string = item.get("date") or item.get("published_at") or "unknown_date"
+
+            # Form full URL if relative path provided
+            slug = item.get("url") or item.get("nid") or ""
+            article_full_url = urllib.parse.urljoin("https://www.elitedangerous.com", str(slug))
+
+            existing_best_match, _ = get_existing_article_from_index(article_header_text, article_date_string)
+
+            should_save = True
+            if not article_body_text and existing_best_match and existing_best_match.get("body"):
+                should_save = False
+
+            if should_save:
+                article_data = {
+                    "header": article_header_text,
+                    "body": article_body_text,
+                    "article_date": article_date_string,
+                    "article_url": article_full_url
+                }
+                if save_article_to_archive(article_data, "Frontier"):
+                    processed_article_count += 1
+
+        return found_article_count, processed_article_count
+
+    except Exception as e:
+        logger.error(f"API fetch failed for range {from_date} to {to_date}: {e}")
+        return 0, 0
 
 
 @playwright_browser_session

@@ -5,3 +5,4 @@ Pillow
 wordcloud
 matplotlib
 py7zr
+python-dateutil

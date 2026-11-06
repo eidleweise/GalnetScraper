@@ -25,3 +25,6 @@ This tool gathers data from the following excellent community resources and offi
 2. Run the scraper:
    * Linux/macOS: `./runGalnetScraper.sh`
    * Windows: `runGalnetScraper.bat`
+3. Use **Browse Articles** from the main menu to choose a source and inspect articles from its
+   latest listing page. This mode previews scraped data without saving changes to the archive.
+   Scraping, archive maintenance, and export/rebuild actions are grouped into their own submenus.

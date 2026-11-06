@@ -3,6 +3,8 @@ import logging
 import os
 import random
 import re
+import shutil
+import textwrap
 import threading
 import time
 import urllib.parse
@@ -466,8 +468,23 @@ def fetch_drinkybird_date(article_header: str, browser_context: BrowserContext) 
 
 # --- Scraper Implementations ---
 
+def record_scraped_article(article_data: Dict[str, Any], source_type: str,
+                           preview_articles: Optional[List[Dict[str, Any]]] = None) -> bool:
+    """Save a scraped article, or collect its merged JSON representation for preview."""
+    if preview_articles is None:
+        return save_article_to_archive(article_data, source_type)
+
+    existing_article, _ = get_existing_article_from_index(
+        article_data.get("header", ""),
+        article_data.get("article_date", "unknown_date")
+    )
+    preview_articles.append(merge_article_data(article_data, existing_article, source_type))
+    return True
+
+
 @playwright_browser_session
-def scrape_inara_page(page_number: int, browser_context: BrowserContext = None) -> Tuple[int, int]:
+def scrape_inara_page(page_number: int, browser_context: BrowserContext = None,
+                      preview_articles: Optional[List[Dict[str, Any]]] = None) -> Tuple[int, int]:
     """
     Scrapes a single page of Galnet news from Inara.cz.
     Returns (found_count, processed_count).
@@ -532,7 +549,7 @@ def scrape_inara_page(page_number: int, browser_context: BrowserContext = None) 
                 "article_url": article_url,
                 "tags": [tag.get_text(strip=True) for tag in article_element.find_all('a', class_=['tag', 'inaratag'])]
             }
-            if save_article_to_archive(article_data, "Inara"):
+            if record_scraped_article(article_data, "Inara", preview_articles):
                 processed_article_count += 1
 
         return found_article_count, processed_article_count
@@ -544,9 +561,10 @@ def scrape_inara_page(page_number: int, browser_context: BrowserContext = None) 
 
 
 @playwright_browser_session
-def scrape_frontier_page(page_number: int, browser_context: BrowserContext = None) -> Tuple[int, int]:
+def scrape_frontier_page(page_number: int, browser_context: BrowserContext = None,
+                         preview_articles: Optional[List[Dict[str, Any]]] = None) -> Tuple[int, int]:
     from_date_str, to_date_str = get_galnet_date_range(page_number, base_date=datetime.now())
-    return scrape_frontier_range(from_date_str, to_date_str, browser_context)
+    return scrape_frontier_range(from_date_str, to_date_str, browser_context, preview_articles)
 
 
 def get_galnet_date_range(page_index: int, base_date: datetime = None) -> Tuple[str, str]:
@@ -586,7 +604,8 @@ def get_galnet_date_range(page_index: int, base_date: datetime = None) -> Tuple[
     return from_date_str, to_date_str
 
 
-def scrape_frontier_range(from_date: str, to_date: str, browser_context: BrowserContext) -> Tuple[int, int]:
+def scrape_frontier_range(from_date: str, to_date: str, browser_context: BrowserContext,
+                          preview_articles: Optional[List[Dict[str, Any]]] = None) -> Tuple[int, int]:
     """
     Scrapes Galnet news using the shared browser context.
     Directly parses dynamic SPA DOM elements without waiting for deprecated selectors.
@@ -648,7 +667,6 @@ def scrape_frontier_range(from_date: str, to_date: str, browser_context: Browser
                     article_header_text, browser_context
                 )
 
-            existing_best_match, _ = get_existing_article_from_index(article_header_text, article_date_string)
             article_full_url = urllib.parse.urljoin("https://www.elitedangerous.com", href)
 
             article_body_text = ""
@@ -695,7 +713,7 @@ def scrape_frontier_range(from_date: str, to_date: str, browser_context: Browser
                     "article_date": article_date_string,
                     "article_url": article_full_url
                 }
-                if save_article_to_archive(article_data, "Frontier"):
+                if record_scraped_article(article_data, "Frontier", preview_articles):
                     processed_article_count += 1
 
         return found_article_count, processed_article_count
@@ -777,7 +795,8 @@ def fetch_frontier_galnet_api(from_date: str, to_date: str) -> Tuple[int, int]:
 
 
 @playwright_browser_session
-def scrape_community_page(page_index: int, browser_context: BrowserContext = None) -> Tuple[int, int]:
+def scrape_community_page(page_index: int, browser_context: BrowserContext = None,
+                          preview_articles: Optional[List[Dict[str, Any]]] = None) -> Tuple[int, int]:
     """
     Scrapes a specific date's articles from the Elite Dangerous Community site.
     The page_index refers to an index in the `community_hrefs` list, not a page number.
@@ -843,8 +862,11 @@ def scrape_community_page(page_index: int, browser_context: BrowserContext = Non
                     article_header_text, browser_context)
 
             existing_best_match, _ = get_existing_article_from_index(article_header_text, article_date_string)
-            if not existing_best_match or Config.SOURCE_PRIORITY.get(existing_best_match.get("source"), -1) < \
-                    Config.SOURCE_PRIORITY["Community"]:
+            should_preview = preview_articles is not None
+            existing_source_priority = Config.SOURCE_PRIORITY.get(
+                existing_best_match.get("source"), -1
+            ) if existing_best_match else -1
+            if should_preview or existing_source_priority < Config.SOURCE_PRIORITY["Community"]:
                 # Replace <br> tags with newlines for better text extraction
                 for br_tag in article_element.find_all("br"):
                     br_tag.replace_with("\n")
@@ -861,7 +883,7 @@ def scrape_community_page(page_index: int, browser_context: BrowserContext = Non
 
                 article_data = {"header": article_header_text, "body": article_body_text,
                                 "article_date": article_date_string, "article_url": article_full_url}
-                if save_article_to_archive(article_data, "Community"):
+                if record_scraped_article(article_data, "Community", preview_articles):
                     processed_article_count += 1
         return found_article_count, processed_article_count
     except Exception as e:
@@ -1257,6 +1279,122 @@ def json_to_markdown(input_file: Optional[Path] = None, output_file: Optional[Pa
         logger.error(f"Error converting JSON to markdown: {e}")
 
 
+def print_article_preview(article: Dict[str, Any]) -> None:
+    """Render a scraped article as readable, terminal-width-aware text."""
+    terminal_width = max(40, shutil.get_terminal_size((80, 24)).columns)
+    content_width = terminal_width - 4
+    separator = "-" * min(80, terminal_width)
+
+    def print_field(label: str, value: Any) -> None:
+        if value:
+            print(textwrap.fill(
+                f"{label}: {value}",
+                width=terminal_width,
+                subsequent_indent="  "
+            ))
+
+    print(f"\n{separator}")
+    print(textwrap.fill(
+        str(article.get("header") or "Untitled"),
+        width=terminal_width,
+        initial_indent="  ",
+        subsequent_indent="  "
+    ))
+    print(separator)
+    print_field("Date", article.get("article_date", "Unknown Date"))
+    print_field("Source", article.get("source", "unknown"))
+    print_field("Scraped", article.get("scrape_date", ""))
+    tags = article.get("tags", [])
+    print_field("Tags", ", ".join(tags) if tags else "")
+    print_field("URL", article.get("article_url", ""))
+    print("\n  Article")
+    body = str(article.get("body") or "").strip()
+    if body:
+        for paragraph in body.split("\n\n"):
+            wrapped_paragraph = textwrap.fill(
+                " ".join(paragraph.split()),
+                width=content_width,
+                initial_indent="  ",
+                subsequent_indent="  "
+            )
+            print(wrapped_paragraph)
+            print()
+    else:
+        print("  (No article body available.)\n")
+    print(separator)
+
+
+def interactive_mode():
+    """Preview and read articles from the first page of a selected source."""
+    separator = "-" * 80
+    sources = {
+        "1": ("Frontier", lambda context, articles: scrape_frontier_page(
+            0, browser_context=context, preview_articles=articles
+        )),
+        "2": ("Community", lambda context, articles: scrape_community_page(
+            0, browser_context=context, preview_articles=articles
+        )),
+        "3": ("Inara", lambda context, articles: scrape_inara_page(
+            1, browser_context=context, preview_articles=articles
+        )),
+    }
+
+    while True:
+        print("\n--- Interactive Article Browser ---")
+        print("1. Frontier")
+        print("2. Community")
+        print("3. Inara")
+        print("Q. Back to Main Menu")
+        source_choice = input("Choose a source: ").strip().lower()
+        if source_choice in {"0", "q"}:
+            return
+
+        selected_source = sources.get(source_choice)
+        if not selected_source:
+            print("Invalid choice. Please try again.")
+            continue
+
+        source_name, scrape_page = selected_source
+        preview_articles: List[Dict[str, Any]] = []
+        load_article_index(force_reload=True)
+        try:
+            with sync_playwright() as playwright_instance:
+                browser = playwright_instance.chromium.launch(headless=True)
+                browser_context = browser.new_context(user_agent=Config.USER_AGENT)
+                try:
+                    scrape_page(browser_context, preview_articles)
+                finally:
+                    browser.close()
+        except Exception as error:
+            logger.error(f"Could not load {source_name} articles: {error}")
+            continue
+
+        if not preview_articles:
+            print(f"No articles were found on the first {source_name} page.")
+            continue
+
+        while True:
+            print(f"\n--- {source_name} Articles ---")
+            for index, article in enumerate(preview_articles, 1):
+                print(
+                    f"{index}. {article.get('header', 'Untitled')} "
+                    f"({article.get('article_date', 'Unknown Date')})"
+                )
+            print(separator)
+            print("Q. Back to source selection")
+            article_choice = input("Select an article to read: ").strip().lower()
+
+            if article_choice in {"b", "q"}:
+                break
+            if not article_choice.isdigit() or not 1 <= int(article_choice) <= len(preview_articles):
+                print("Invalid choice. Please select an article number.")
+                continue
+
+            selected_article = preview_articles[int(article_choice) - 1]
+            print_article_preview(selected_article)
+            input("\nPress Enter or Q to return to the article list...")
+
+
 def execute_menu_choice(user_choice: str):
     """
     Executes a single menu action by choice number.
@@ -1341,9 +1479,31 @@ def execute_menu_choice(user_choice: str):
         perform_maintenance_task("remove_duplicates")
     elif user_choice == '11':
         json_to_markdown()
+    elif user_choice == '12':
+        interactive_mode()
     else:
         return False
     return True
+
+
+def run_menu_submenu(title: str, options: Dict[str, Tuple[str, str]]) -> None:
+    """Display a submenu and dispatch its selected existing menu action."""
+    while True:
+        print(f"\n--- {title} ---")
+        for choice, (label, _) in options.items():
+            print(f"{choice}. {label}")
+        print("Q. Back")
+
+        choice = input("Enter your choice: ").strip().lower()
+        if choice in {"0", "q"}:
+            return
+
+        selected_option = options.get(choice)
+        if selected_option is None:
+            print("Invalid choice. Please try again.")
+            continue
+
+        execute_menu_choice(selected_option[1])
 
 
 def main_menu():
@@ -1352,24 +1512,38 @@ def main_menu():
     """
     while True:
         print("\n--- Galnet Scraper Menu ---")
-        print("1. Sync New Articles (Quick Update)")
-        print("2. Force Sync All Articles (Full Historical Sweep)")
-        print("3. Bulk Scrape Frontier Galnet (Page Range)")
-        print("4. Bulk Scrape Community Galnet (Index Range)")
-        print("5. Bulk Scrape Inara Galnet (Page Range)")
-        print("6. Rename Files & Sync Timestamps")
-        print("7. Fix Unknown Date Files (Search Drinkybird)")
-        print("8. Rebuild Master JSON & 7z Archive")
-        print("9. Normalize Dates (Elite Format)")
-        print("10. Remove Duplicate Articles")
-        print("11. Convert JSON to Markdown")
-        print("0. Quit")
+        print("1. Sync & Scrape")
+        print("2. Browse Articles")
+        print("3. Archive Maintenance")
+        print("4. Export & Rebuild")
+        print("Q. Quit")
 
-        user_choice = input("\nEnter your choice: ").strip()
-        if user_choice == '0':
+        user_choice = input("\nEnter your choice: ").strip().lower()
+        if user_choice in {'0', 'q'}:
             break
-
-        if not execute_menu_choice(user_choice):
+        if user_choice == '1':
+            run_menu_submenu("Sync & Scrape", {
+                "1": ("Quick sync all sources", "1"),
+                "2": ("Full historical sync", "2"),
+                "3": ("Bulk scrape Frontier (date range)", "3"),
+                "4": ("Bulk scrape Community (index range)", "4"),
+                "5": ("Bulk scrape Inara (page range)", "5"),
+            })
+        elif user_choice == '2':
+            interactive_mode()
+        elif user_choice == '3':
+            run_menu_submenu("Archive Maintenance", {
+                "1": ("Rename files and sync timestamps", "6"),
+                "2": ("Fix unknown dates", "7"),
+                "3": ("Normalize dates", "9"),
+                "4": ("Remove duplicates", "10"),
+            })
+        elif user_choice == '4':
+            run_menu_submenu("Export & Rebuild", {
+                "1": ("Rebuild master JSON and 7z archive", "8"),
+                "2": ("Convert JSON to Markdown", "11"),
+            })
+        else:
             print("Invalid choice. Please try again.")
 
 

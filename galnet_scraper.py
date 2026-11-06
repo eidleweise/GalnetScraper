@@ -512,18 +512,24 @@ def scrape_inara_page(page_number: int, browser_context: BrowserContext = None) 
                 article_date_string = find_date_locally(article_header_text) or fetch_drinkybird_date(
                     article_header_text, browser_context)
 
-            body_element = article_element.find('article')
-            article_body_text = ""
-            if body_element:
-                article_body_text = "\n\n".join([
-                    paragraph.get_text(strip=True) for paragraph in body_element.find_all('p')
-                    if paragraph.get_text(strip=True)  # Ensure paragraph is not empty
-                ])
+            body_element = article_element.select_one('.incontent') or article_element.find('article')
+            body_element = body_element or article_element
+            article_body_text = "\n\n".join(
+                paragraph.get_text(" ", strip=True)
+                for paragraph in body_element.find_all('p')
+                if paragraph.get_text(strip=True)
+            )
+
+            article_link = header_element.find('a', href=True)
+            article_url = urllib.parse.urljoin(
+                "https://inara.cz", article_link['href']
+            ) if article_link else target_url
 
             article_data = {
                 "header": article_header_text,
                 "body": article_body_text,
                 "article_date": article_date_string,
+                "article_url": article_url,
                 "tags": [tag.get_text(strip=True) for tag in article_element.find_all('a', class_=['tag', 'inaratag'])]
             }
             if save_article_to_archive(article_data, "Inara"):
@@ -596,35 +602,45 @@ def scrape_frontier_range(from_date: str, to_date: str, browser_context: Browser
     found_article_count = 0
 
     try:
-        # Fast navigation - wait until DOM is ready, then allow a short window for Nuxt/Vue hydration
+        # Wait for the client-rendered Galnet cards before parsing the listing.
         page.goto(target_url, timeout=45000, wait_until="domcontentloaded")
-        page.wait_for_timeout(2500)
+        try:
+            page.locator("article[class*='galnet-listing__item']").first.wait_for(
+                state="attached", timeout=15000
+            )
+        except PlaywrightTimeoutError:
+            logger.info(f"No Frontier article cards loaded for {from_date} to {to_date}.")
 
         soup = BeautifulSoup(page.content(), 'html.parser')
 
-        # Select links pointing to galnet detail pages
-        article_links = soup.select("a[href*='/news/galnet/']")
+        # The image and title both link to an article; use the title link from
+        # each card so its heading and date belong to the same listing item.
+        article_cards = soup.select("article[class*='galnet-listing__item']")
         seen_urls = set()
 
-        for link in article_links:
+        for article_card in article_cards:
+            link = (
+                article_card.select_one(".c-galnet-listing__item-content h2 a[href]")
+                or article_card.select_one("h2 a[href*='/news/galnet/']")
+            )
+            if not link:
+                continue
+
             raw_href = link.get('href')
             if not raw_href:
                 continue
             href = str(raw_href[0]) if isinstance(raw_href, list) else str(raw_href)
             if not href or href in seen_urls:
                 continue
-            seen_urls.add(href)
 
-            header_elem = link.find(['h1', 'h2', 'h3', 'h4']) or link
-            article_header_text = header_elem.get_text(strip=True)
+            article_header_text = link.get_text(" ", strip=True)
             if not article_header_text or len(article_header_text) < 5:
                 continue
+            seen_urls.add(href)
 
             found_article_count += 1
 
-            # Locate parent card to grab date
-            parent = link.find_parent(['article', 'div']) or link
-            date_elem = parent.find('time') or parent.select_one("[class*='date'], [class*='time']")
+            date_elem = article_card.find('time') or article_card.select_one("[class*='date'], [class*='time']")
             article_date_string = date_elem.get_text(strip=True) if date_elem else "unknown_date"
 
             if article_date_string == "unknown_date":
@@ -643,18 +659,23 @@ def scrape_frontier_range(from_date: str, to_date: str, browser_context: Browser
                 enforce_global_rate_limit()
                 try:
                     detail_page.goto(article_full_url, timeout=30000, wait_until="domcontentloaded")
-                    detail_page.wait_for_timeout(1500)
+                    detail_page.locator("[class*='news-galnet-article__main']").wait_for(
+                        state="visible", timeout=15000
+                    )
 
                     detail_soup = BeautifulSoup(detail_page.content(), 'html.parser')
                     body_elem = (
+                            detail_soup.select_one("[class*='news-galnet-article__main']") or
                             detail_soup.select_one("[class*='galnet-details']") or
-                            detail_soup.find('main') or
-                            detail_soup.find('article') or
-                            detail_soup.select_one("[class*='body']")
+                            detail_soup.select_one("main article")
                     )
 
                     if body_elem:
-                        paragraphs = [p.get_text(strip=True) for p in body_elem.find_all('p') if p.get_text(strip=True)]
+                        paragraphs = [
+                            p.get_text(" ", strip=True)
+                            for p in body_elem.find_all('p')
+                            if p.get_text(strip=True)
+                        ]
                         if paragraphs:
                             article_body_text = "\n\n".join(paragraphs)
                             is_body_scrape_successful = True
@@ -663,10 +684,9 @@ def scrape_frontier_range(from_date: str, to_date: str, browser_context: Browser
                 finally:
                     detail_page.close()
 
-            should_save = True
-            if not is_body_scrape_successful and existing_best_match and existing_best_match.get("body"):
-                should_save = False
-                logger.info(f"Skipping article '{article_header_text}' due to empty body.")
+            should_save = is_body_scrape_successful
+            if not should_save:
+                logger.info(f"Skipping article '{article_header_text}' because its body could not be extracted.")
 
             if should_save:
                 article_data = {
@@ -867,7 +887,7 @@ def sync_all_sources():
         try:
             # Scrape Frontier
             logger.info("\n--- Checking Frontier ---")
-            page_number = 1
+            page_number = 0
             total_processed_frontier = 0
             while True:
                 found, processed = scrape_frontier_page(page_number, browser_context=browser_context)

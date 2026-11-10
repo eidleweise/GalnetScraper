@@ -17,14 +17,12 @@ This tool gathers data from the following excellent community resources and offi
 
 ## Setup
 
-1. Install dependencies:
+1. Run the scraper:
    ```bash
-   pip install -r requirements.txt
-   playwright install
+   ./runGalnetScraper.sh
    ```
-2. Run the scraper:
-   * Linux/macOS: `./runGalnetScraper.sh`
-   * Windows: `runGalnetScraper.bat`
+   The launcher uses `uv` if it is installed. Otherwise, it creates and maintains a project-local `.venv`. It installs the Python requirements and Playwright's Chromium browser when needed.
+2. On Windows, run `runGalnetScraper.bat`.
 3. Use **Browse Articles** from the main menu to choose a source and inspect articles from its
    latest listing page. This mode previews scraped data without saving changes to the archive.
    Scraping, archive maintenance, and export/rebuild actions are grouped into their own submenus.

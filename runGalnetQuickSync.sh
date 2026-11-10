@@ -3,13 +3,19 @@
 # Navigate to the script's directory
 cd "$(dirname "$0")"
 
-# Activate virtual environment if it exists
-if [ -d ".venv" ]; then
-    source .venv/bin/activate
-fi
+source ./python_env.sh
+
+echo "Checking Python dependencies..."
+setup_python_environment || exit 1
+
+echo "Ensuring Playwright Chromium is installed..."
+ensure_playwright_browser || exit 1
 
 echo "Starting Galnet Quick Sync..."
-python galnet_scraper.py 1
+if ! run_python galnet_scraper.py 1; then
+    echo "Galnet Quick Sync failed; no changes were staged or committed." >&2
+    exit 1
+fi
 
 # Stage all changes and commit with article dates
 git add -A

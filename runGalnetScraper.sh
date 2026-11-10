@@ -3,16 +3,13 @@
 # Navigate to the script's directory
 cd "$(dirname "$0")"
 
-# Activate virtual environment if it exists
-if [ -d ".venv" ]; then
-    source .venv/bin/activate
-fi
+source ./python_env.sh
 
-echo "Installing/Updating requirements..."
-pip install -r requirements.txt
+echo "Checking Python dependencies..."
+setup_python_environment || exit 1
 
-echo "Ensuring Playwright browsers are installed..."
-playwright install
+echo "Ensuring Playwright Chromium is installed..."
+ensure_playwright_browser || exit 1
 
 echo "Starting Galnet Scraper..."
-python galnet_scraper.py
+run_python galnet_scraper.py
